@@ -1,0 +1,32 @@
+#+TITLE: EEDROS Requirements
+#+AUTHOR: Will Vining
+
+* Introduction
+Erlang Enhanced Distributed ROS (EEDROS) is a shim that helps to
+deploy large multi-robot systems where each robot is controled by
+ROS. EEDROS provides an inter-robot communication layer similar to the
+pub/sub mechanism of ROS itself. The goal of EEDROS is to allow each
+robot to operate completely independently while providing an abstract
+layer overwhich robots can communicate.
+
+* Requirements
+
+** Communication Layer
+The communication layer must be robust to node failures and network
+disconnects. It shall be easy to use from ROS (ie. should be as close
+to messaging in ROS as possible from the perspective of the
+developer). It should not be transparent to hilight the fact that
+message passing is not as reliable as internal ROS message passing.
+
+** Easily deploy to many robots in parallel
+It will be easy to pass a list of robots to a command and
+deploy/execute the specified ROS nodes as well as EEDROS components on
+those robots. It will be equally as easy to add a robot at any time or
+remove a robot.
+
+** Monitor status of robots
+There must be a mechanism for alerting an operator when hardware on a
+robot has failed. There must be a way to aggregate and view log output
+from all robots. EEDROS will provide a mechanism to acquire arbitrary
+data from ROS topics on each robot (eavesdroping -- distributed
+=rostopic echo=).

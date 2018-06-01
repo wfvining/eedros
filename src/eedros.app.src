@@ -1,0 +1,17 @@
+{application, eedros,
+ [{description, "Erlang Shim for building distributed robotics systems with ROS"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, { eedros_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    ebus
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
