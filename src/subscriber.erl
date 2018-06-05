@@ -1,21 +1,23 @@
 %%%-------------------------------------------------------------------
-%%% @author Will Vining <wfvining@cs.unm.edu>
+%%% @author Will Vining <wfvining@gmail.com>
 %%% @copyright (C) 2018, Will Vining
 %%% @doc
 %%%
+%%% This is a server just for convenience, so it can be easily
+%%% supervised. The only purpose of this module is to open a port that
+%%% is written to whenever a message is received on an erlbus
+%%% topic. The port is responsible for passing the messages on to the
+%%% "appropriate" ROS topic.
+%%%
 %%% @end
-%%% Created : 30 May 2018 by Will Vining <wfvining@cs.unm.edu>
+%%% Created : 31 May 2018 by Will Vining <wfvining@gmail.com>
 %%%-------------------------------------------------------------------
--module(eedros_server).
+-module(subscriber).
 
 -behaviour(gen_server).
 
 %% API
--export([start_link/1,
-         advertise/1,
-         subscribe/2,
-         unsubscribe/1,
-         publish/2]).
+-export([start_link/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -23,7 +25,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, {adv_sup, sub_sup}).
+-record(state, {port, topic, handler}).
 
 %%%===================================================================
 %%% API
@@ -34,54 +36,13 @@
 %% Starts the server
 %% @end
 %%--------------------------------------------------------------------
--spec start_link(Supervisor :: pid()) -> {ok, Pid :: pid()} |
+-spec start_link(Topic :: string(), Type :: string()) -> {ok, Pid :: pid()} |
                       {error, Error :: {already_started, pid()}} |
                       {error, Error :: term()} |
                       ignore.
-start_link(Supervisor) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, Supervisor, []).
-
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Unsubscribe from a topic
-%% @end
-%%--------------------------------------------------------------------
--spec advertise(Topic :: string()) -> ok.
-advertise(Topic) ->
-    gen_server:call(?SERVER, {advertise, Topic}).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Subscribe to a topic
-%% @end
-%%--------------------------------------------------------------------
--spec subscribe(Topic :: string(), Type :: string()) -> ok.
-subscribe(Topic, Type) ->
-    gen_server:call(?SERVER, {subscribe, Topic, Type}).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Unsubscribe from a topic
-%% @end
-%%--------------------------------------------------------------------
--spec unsubscribe(Topic :: string()) -> ok.
-unsubscribe(Topic) ->
-    gen_server:cast(?SERVER, {unsubscribe, Topic}).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Publish a message on a topic
-%%
-%% For now the message will be a string that can be directly
-%% interpreted by 'rostopic', but in the future is should be a binary.
-%%
-%% @end
-%% --------------------------------------------------------------------
--spec publish(Topic :: string(), Message :: binary()) -> ok.
-publish(Topic, Message) ->
-    gen_server:cast(?SERVER, {publish, Topic, Message}).
-
+start_link(Topic, Type) ->
+    %% many subscribers, don't register them
+    gen_server:start_link(?MODULE, [Topic, Type], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -98,16 +59,18 @@ publish(Topic, Message) ->
                               {ok, State :: term(), hibernate} |
                               {stop, Reason :: term()} |
                               ignore.
-init(Supervisor) ->
-    process_flag(trap_exit, true),
-    self() ! {start_advertisement_supervisor, Supervisor},
-    self() ! {start_subscription_supervisor, Supervisor},
-    {ok, #state{}}.
+init([Topic,Type]) ->
+    Port = open_port({spawn, "python priv/eedros_sub.py " ++ Topic ++ " " ++ Type}, [{packet, 2}]),
+    Handler = ebus_proc:spawn_handler(fun(Msg, ServerPid) -> gen_server:cast(ServerPid, {message, Msg}) end,
+                                      [self()] ),
+    link(Handler),
+    ebus:sub(Handler, Topic),
+    {ok, #state{port=Port, topic=Topic, handler=Handler}}.
 
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Handling call messages
+%% Handling call messages -- Ignore all calls, not going to use them
 %% @end
 %%--------------------------------------------------------------------
 -spec handle_call(Request :: term(), From :: {pid(), term()}, State :: term()) ->
@@ -119,22 +82,14 @@ init(Supervisor) ->
                          {noreply, NewState :: term(), hibernate} |
                          {stop, Reason :: term(), Reply :: term(), NewState :: term()} |
                          {stop, Reason :: term(), NewState :: term()}.
-handle_call({subscribe, Topic, Type}, _From, State) ->
-    Reply = case subscription_sup:subscribe(Topic, Type) of
-                {ok, Subscriber} ->
-                    ok;
-                {error, {already_started, _}} ->
-                    already_subscribed
-            end,
-    {reply, Reply, State};
-handle_call({advertise, Topic}, _From, State) ->
-    Reply = advertisement_sup:advertise(Topic),
+handle_call(_Request, _From, State) ->
+    Reply = nocall,
     {reply, Reply, State}.
 
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Handling cast messages
+%% Handling cast messages -- Ignore all casts, not going to use them
 %% @end
 %%--------------------------------------------------------------------
 -spec handle_cast(Request :: term(), State :: term()) ->
@@ -142,8 +97,8 @@ handle_call({advertise, Topic}, _From, State) ->
                          {noreply, NewState :: term(), Timeout :: timeout()} |
                          {noreply, NewState :: term(), hibernate} |
                          {stop, Reason :: term(), NewState :: term()}.
-handle_cast({publish, Topic, Message}, State) ->
-    ebus:pub(Topic, Message),
+handle_cast({message, Msg}, State=#state{port=Port}) ->
+    Port ! {self(), {command, Msg}},
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -157,27 +112,8 @@ handle_cast({publish, Topic, Message}, State) ->
                          {noreply, NewState :: term(), Timeout :: timeout()} |
                          {noreply, NewState :: term(), hibernate} |
                          {stop, Reason :: normal | term(), NewState :: term()}.
-handle_info({start_advertisement_supervisor, Supervisor}, State) ->
-
-    AdvSpec = #{ id       => advertisement_sup,
-                 start    => {advertisement_sup, start_link, []},
-                 restart  => permanent,
-                 shutdown => 10000,
-                 type     => supervisor },
-
-    {ok, AdvSup} = supervisor:start_child(Supervisor, AdvSpec),
-    { noreply, State#state{ adv_sup = AdvSup } };
-handle_info({start_subscription_supervisor, Supervisor}, State) ->
-
-    SubSpec = #{ id       => subscription_sup,
-                 start    => {subscription_sup, start_link, []},
-                 restart  => permanent,
-                 shutdown => 10000,
-                 type     => supervisor },
-
-    {ok, SubSup} = supervisor:start_child(Supervisor, SubSpec),
-    { noreply, State#state{ sub_sup = SubSup } }.
-
+handle_info(_Info, State) ->
+    {noreply, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -190,8 +126,14 @@ handle_info({start_subscription_supervisor, Supervisor}, State) ->
 %%--------------------------------------------------------------------
 -spec terminate(Reason :: normal | shutdown | {shutdown, term()} | term(),
                 State :: term()) -> any().
-terminate(_Reason, _State) ->
-    ok.
+terminate(_Reason, #state{port=Port}) ->
+    Port ! {self(), close},
+    receive
+        {Port, closed} ->
+            ok
+    after 2000 -> % two seconds is a wild guess
+            'cannot close port'
+    end.
 
 %%--------------------------------------------------------------------
 %% @private

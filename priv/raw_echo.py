@@ -13,6 +13,6 @@ def echo_cb(msg):
 
 if __name__ == '__main__':
     rospy.init_node('raw_echo', anonymous=True)
-    topic = '/eedros/' + sys.argv[1]
+    topic = '/eedros/pub/' + sys.argv[1]
     sub = rospy.Subscriber(topic, rospy.msg.AnyMsg, echo_cb)
     rospy.spin()
